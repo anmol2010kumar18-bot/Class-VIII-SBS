@@ -436,6 +436,7 @@ html,body{height:100%;font-family:"DM Sans",sans-serif;background:var(--navy);co
     <button class="nav-btn perm-ct" data-page="student_info" onclick="nav(this)" style="display:none;"><span class="nav-icon">👨‍👩‍👧</span><span class="nav-label sb-text">Student Info</span></button>
     <button class="nav-btn perm-hw" data-page="homework" onclick="nav(this)" style="display:none;"><span class="nav-icon">📓</span><span class="nav-label sb-text">Homework Manager</span><span class="nav-badge sb-text" id="hwBadge" style="display:none;">0</span></button>
     <button class="nav-btn perm-complain" data-page="complain" onclick="nav(this)" style="display:none;"><span class="nav-icon">⚠️</span><span class="nav-label sb-text">Complaints</span></button>
+    <button class="nav-btn perm-monitor" data-page="assign_duty" onclick="nav(this)" style="display:none;"><span class="nav-icon">📋</span><span class="nav-label sb-text">Assign Duty</span></button>
     <div class="sb-footer">
       <button class="logout-btn" onclick="doLogout()">Sign Out</button>
     </div>
@@ -932,6 +933,54 @@ html,body{height:100%;font-family:"DM Sans",sans-serif;background:var(--navy);co
         </div>
       </div>
 
+      <!-- ASSIGN DUTY PAGE -->
+      <div class="page" id="page-assign_duty">
+        <div class="hero"><div class="hero-h">Assign <span>Duty</span></div><div class="hero-sub">Assign duties to students, track completion by due date.</div></div>
+        <div class="card">
+          <div class="card-title">➕ Assign New Duty</div>
+          <div class="form-group">
+            <label class="form-label">Duty Type</label>
+            <select class="form-select" id="dutyType" onchange="onDutyTypeChange()">
+              <option value="class_monitor">🏫 Class Monitor</option>
+              <option value="prayer">🙏 Prayer Duty</option>
+              <option value="library">📚 Library Duty</option>
+              <option value="lab">🔬 Lab Duty</option>
+              <option value="cleanliness">🧹 Cleanliness Duty</option>
+              <option value="sports">⚽ Sports Duty</option>
+              <option value="custom">✏️ Custom Duty…</option>
+            </select>
+          </div>
+          <div class="form-group" id="customDutyGroup" style="display:none;">
+            <label class="form-label">Custom Duty Name</label>
+            <input class="form-input" id="customDutyName" placeholder="e.g. Decoration work">
+          </div>
+          <div class="form-group"><label class="form-label">Assign To (select students)</label>
+            <div id="dutyStudentCheckboxes" style="max-height:220px;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;padding:4px 0;"></div>
+          </div>
+          <div class="form-group"><label class="form-label">Due Date</label>
+            <input class="form-input" type="date" id="dutyDueDate">
+          </div>
+          <div class="form-group"><label class="form-label">Note (optional)</label>
+            <input class="form-input" id="dutyNote" placeholder="Any extra instructions…">
+          </div>
+          <button class="btn btn-gold" onclick="assignDuty()">📋 Assign Duty</button>
+        </div>
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:13px;">
+            <div class="card-title" style="margin-bottom:0;">📋 Duty Log</div>
+            <select class="form-select" id="dutyFilterStatus" style="max-width:150px;" onchange="renderDutyLog()">
+              <option value="">All Statuses</option>
+              <option value="pending">⏳ Pending</option>
+              <option value="done">✅ Done</option>
+            </select>
+            <select class="form-select" id="dutyFilterStudent" style="max-width:190px;" onchange="renderDutyLog()">
+              <option value="">All Students</option>
+            </select>
+          </div>
+          <div id="dutyLog"></div>
+        </div>
+      </div>
+
     </div><!-- /pages -->
   </div><!-- /main-area -->
 </div><!-- /appScreen -->
@@ -1123,6 +1172,20 @@ html,body{height:100%;font-family:"DM Sans",sans-serif;background:var(--navy);co
   </div>
 </div>
 
+<!-- Mark Duty Completion Modal -->
+<div class="modal-overlay" id="dutyCompletionModal">
+  <div class="modal-box" style="max-width:440px;">
+    <div style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--gold);margin-bottom:4px;">✅ Mark Duty Completion</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;" id="dutyCompletionLabel"></div>
+    <input type="hidden" id="dutyCompletionId">
+    <div id="dutyCompletionGrid" style="max-height:340px;overflow-y:auto;display:grid;gap:7px;"></div>
+    <div style="display:flex;gap:10px;margin-top:16px;">
+      <button class="btn btn-outline" style="flex:1;" onclick="closeModal('dutyCompletionModal')">Cancel</button>
+      <button class="btn btn-gold" style="flex:1;" onclick="saveDutyCompletion()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════
 // STARTUP
@@ -1207,7 +1270,16 @@ function setupFirebaseListeners(){
           cr.forEach(item=>{
             if(item&&item.id&&!tombs[item.id]){
               const existing=lmap[item.id];
-              const merged=Object.assign({},existing||{},item);
+              const merged=Object.assign({},item,existing||{});
+              // For fields where local has a value but remote might be stale (e.g. parentMobile),
+              // prefer local. But if local field is empty/missing, use remote field.
+              if(existing){
+                Object.keys(item).forEach(field=>{
+                  if(existing[field]===undefined||existing[field]===null||existing[field]===""){
+                    merged[field]=item[field];
+                  }
+                });
+              }
               if(!existing||JSON.stringify(existing)!==JSON.stringify(merged)){ lmap[item.id]=merged; changed=true; }
             }
           });
@@ -1243,7 +1315,7 @@ function forceSyncFromFirebase() {
     const remote = snap.val();
     if (remote) {
       // ✅ Replace each array key with remote version, filtered through tombstones
-      const arrayKeys = ["files", "students", "notices", "results", "gallery", "copySessions", "timetable", "studentAttendance", "ct_notifications", "studentNotifications", "homework", "complaints"];
+      const arrayKeys = ["files", "students", "notices", "results", "gallery", "copySessions", "timetable", "studentAttendance", "ct_notifications", "studentNotifications", "homework", "complaints", "duties"];
       
       arrayKeys.forEach(key => {
         if (remote[key] !== undefined) {
@@ -1312,9 +1384,10 @@ const SUBJECTS=[
   {id:"computer",name:"Computer Sc.",emoji:"💻",teacher:"Rakesh Rajput"},
   {id:"atl",name:"ATL",emoji:"🔬",teacher:"Sanjeev Ranjan"},
   {id:"games",name:"Games",emoji:"⚽",teacher:"Subham Ojha"},
-  {id:"library",name:"Library",emoji:"📚",teacher:"Anil Kumar Singh"}
+  {id:"library",name:"Library",emoji:"📚",teacher:"Anil Kumar Singh"},
+  {id:"general",name:"General / All",emoji:"📂",teacher:"All Teachers"}
 ];
-const SUBJ_COLORS={maths:"#4a9eff",physics:"#ffd700",chemistry:"#3dba7e",biology:"#ff7eb6",english:"#e8a020",history:"#c060ff",geography:"#60d0ff",civics:"#ff9060",economics:"#60ff90",hindi:"#ff6060",computer:"#a0a0ff",atl:"#00e5cc",games:"#ff8c42",library:"#9b59b6"};
+const SUBJ_COLORS={maths:"#4a9eff",physics:"#ffd700",chemistry:"#3dba7e",biology:"#ff7eb6",english:"#e8a020",history:"#c060ff",geography:"#60d0ff",civics:"#ff9060",economics:"#60ff90",hindi:"#ff6060",computer:"#a0a0ff",atl:"#00e5cc",games:"#ff8c42",library:"#9b59b6",general:"#aaaaaa"};
 const FIXED=
 {classteacher:{pass:"classpass26",name:"Class Teacher",role:"classteacher",avatar:"CT"},
 teacher:{pass:"teachdav18",name:"Subject Teacher",role:"teacher",avatar:"ST"},
@@ -1332,8 +1405,9 @@ let _pendingEditAtt={};
 const SUBJ_OPT_IDS=["upSubject","resSubject","editResSubject","hwSubject","editHWSubject","complainSubject","editComplaintSubject"];
 
 function populateAllSubjectSelects(){
-  const subjOptions=`<option value="">Select subject</option>`+SUBJECTS.map(s=>`<option value="${s.id}">${s.emoji} ${s.name}</option>`).join("");
-  const subjOptionsWithGeneral=`<option value="">General</option>`+SUBJECTS.map(s=>`<option value="${s.id}">${s.emoji} ${s.name}</option>`).join("");
+  const regularSubjects=SUBJECTS.filter(s=>s.id!=="general");
+  const subjOptions=`<option value="">Select subject</option>`+regularSubjects.map(s=>`<option value="${s.id}">${s.emoji} ${s.name}</option>`).join("")+`<option value="general">📂 General / All</option>`;
+  const subjOptionsWithGeneral=`<option value="">General</option>`+regularSubjects.map(s=>`<option value="${s.id}">${s.emoji} ${s.name}</option>`).join("");
   SUBJ_OPT_IDS.forEach(id=>{
     const el=document.getElementById(id);
     if(!el) return;
@@ -1342,7 +1416,7 @@ function populateAllSubjectSelects(){
   });
   // HW view filter
   const hwf=document.getElementById("hwViewFilter");
-  if(hwf) hwf.innerHTML=`<option value="">All Subjects</option>`+SUBJECTS.map(s=>`<option value="${s.id}">${s.emoji} ${s.name}</option>`).join("");
+  if(hwf) hwf.innerHTML=`<option value="">All Subjects</option>`+regularSubjects.map(s=>`<option value="${s.id}">${s.emoji} ${s.name}</option>`).join("")+`<option value="general">📂 General / All</option>`;
 }
 function populateSelects(){ populateAllSubjectSelects(); }
 
@@ -1489,7 +1563,7 @@ function toggleMobSidebar(){ const sb=document.getElementById("sidebar"),ov=docu
 function closeMobSidebar(){ document.getElementById("sidebar").classList.remove("mob-open"); document.getElementById("mobOverlay").classList.remove("open"); document.getElementById("mobToggle").textContent="☰"; }
 function goHome(){ nav(document.querySelector("[data-page=dashboard]")); closeFolder(); }
 
-const PAGE_TITLES={dashboard:"Dashboard",subjects:"Subjects",notices:"Notice Board",gallery:"Gallery",timetable:"Timetable",attendance:"Attendance Record",results:"Results & Marks",hw_view:"Homework Board",upload:"Upload Files",post_notice:"Post Notice",manage_timetable:"Set Timetable",manage_results:"Enter Results",manage_attendance:"Mark Attendance",manage_students:"Students",copy_checking:"Copy Checking",homework:"Homework Manager",complain:"Complaints & Reports",student_info:"Student Information"};
+const PAGE_TITLES={dashboard:"Dashboard",subjects:"Subjects",notices:"Notice Board",gallery:"Gallery",timetable:"Timetable",attendance:"Attendance Record",results:"Results & Marks",hw_view:"Homework Board",upload:"Upload Files",post_notice:"Post Notice",manage_timetable:"Set Timetable",manage_results:"Enter Results",manage_attendance:"Mark Attendance",manage_students:"Students",copy_checking:"Copy Checking",homework:"Homework Manager",complain:"Complaints & Reports",student_info:"Student Information",assign_duty:"Assign Duty"};
 
 function nav(btn){
   if(!btn) return;
@@ -1498,7 +1572,7 @@ function nav(btn){
   document.querySelectorAll(".page").forEach(p=>p.classList.remove("active")); document.getElementById("page-"+pid).classList.add("active");
   document.getElementById("pageTitle").textContent=PAGE_TITLES[pid]||pid;
   const backBtn=document.getElementById("backBtn");
-  backBtn.classList.toggle("show",["upload","post_notice","manage_timetable","manage_results","manage_attendance","manage_students","results","copy_checking","homework","complain","student_info"].includes(pid));
+  backBtn.classList.toggle("show",["upload","post_notice","manage_timetable","manage_results","manage_attendance","manage_students","results","copy_checking","homework","complain","student_info","assign_duty"].includes(pid));
   closeFolder();
   if(window.innerWidth<=820) closeMobSidebar();
   if(pid==="notices"||pid==="post_notice") renderNotices();
@@ -1518,6 +1592,7 @@ function nav(btn){
   if(pid==="homework"){ populateAllSubjectSelects(); renderAllHW(); }
   if(pid==="complain"){ populateComplainSelects(); renderComplaintLog(); }
   if(pid==="student_info") renderStudentInfoTable();
+  if(pid==="assign_duty"){ populateDutySelects(); renderDutyLog(); }
   _refreshNotifDot();
 }
 function handleBack(){ nav(document.querySelector("[data-page=dashboard]")); }
@@ -2947,6 +3022,142 @@ let _tt;
 function showToast(msg){ clearTimeout(_tt); const t=document.getElementById("toast"); document.getElementById("toastMsg").textContent=msg; t.classList.add("show"); _tt=setTimeout(()=>t.classList.remove("show"),2800); }
 
 let _confirmResolve=null;
+// ── ASSIGN DUTY ──
+const DUTY_LABELS={
+  class_monitor:"🏫 Class Monitor",
+  prayer:"🙏 Prayer Duty",
+  library:"📚 Library Duty",
+  lab:"🔬 Lab Duty",
+  cleanliness:"🧹 Cleanliness Duty",
+  sports:"⚽ Sports Duty"
+};
+function onDutyTypeChange(){
+  const v=document.getElementById("dutyType").value;
+  document.getElementById("customDutyGroup").style.display=v==="custom"?"":"none";
+}
+function populateDutySelects(){
+  const students=(DB.get("students")||[]).sort((a,b)=>parseInt(a.roll)-parseInt(b.roll));
+  const grid=document.getElementById("dutyStudentCheckboxes");
+  if(grid) grid.innerHTML=students.map(s=>`<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;cursor:pointer;font-size:13px;">
+        <input type="checkbox" class="duty-student-cb" value="${s.id}" style="accent-color:var(--gold);width:15px;height:15px;cursor:pointer;">
+        <span>${s.roll}. ${s.name}</span></label>`).join("");
+  const fd=document.getElementById("dutyFilterStudent");
+  if(fd) fd.innerHTML=`<option value="">All Students</option>`+students.map(s=>`<option value="${s.id}">${s.roll}. ${s.name}</option>`).join("");
+}
+function assignDuty(){
+  const type=document.getElementById("dutyType").value;
+  const customName=document.getElementById("customDutyName").value.trim();
+  const due=document.getElementById("dutyDueDate").value;
+  const note=document.getElementById("dutyNote").value.trim();
+  if(!due){ showToast("❌ Select a due date"); return; }
+  const checked=[...document.querySelectorAll(".duty-student-cb:checked")].map(c=>c.value);
+  if(!checked.length){ showToast("❌ Select at least one student"); return; }
+  if(type==="custom"&&!customName){ showToast("❌ Enter custom duty name"); return; }
+  const dutyName=type==="custom"?customName:(DUTY_LABELS[type]||type);
+  const students=(DB.get("students")||[]).filter(s=>checked.includes(s.id));
+  const duty={
+    id:`duty_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    type,name:dutyName,
+    students:students.map(s=>({id:s.id,name:s.name,roll:s.roll,status:"pending"})),
+    dueDate:due,note,
+    assignedOn:new Date().toLocaleDateString("en-IN"),
+    assignedBy:currentUser.name
+  };
+  DB.push("duties",duty);
+  showToast("✅ Duty assigned!");
+  document.getElementById("dutyType").value="class_monitor";
+  document.getElementById("customDutyName").value="";
+  document.getElementById("dutyDueDate").value="";
+  document.getElementById("dutyNote").value="";
+  document.getElementById("customDutyGroup").style.display="none";
+  document.querySelectorAll(".duty-student-cb").forEach(cb=>cb.checked=false);
+  renderDutyLog();
+}
+function renderDutyLog(){
+  const el=document.getElementById("dutyLog"); if(!el) return;
+  const duties=DB.get("duties")||[];
+  const filterStatus=document.getElementById("dutyFilterStatus")?.value||"";
+  const filterStudent=document.getElementById("dutyFilterStudent")?.value||"";
+  const canManage=currentUser&&["classteacher","monitor"].includes(currentUser.role);
+  let filtered=duties;
+  if(filterStatus) filtered=filtered.filter(d=>d.students.some(s=>s.status===filterStatus));
+  if(filterStudent) filtered=filtered.filter(d=>d.students.some(s=>s.id===filterStudent));
+  if(!filtered.length){ el.innerHTML=`<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-text">No duties assigned yet</div></div>`; return; }
+  el.innerHTML=filtered.map(d=>{
+    const total=d.students.length,done=d.students.filter(s=>s.status==="done").length;
+    const pct=total?Math.round(done/total*100):0;
+    const overdue=d.dueDate&&new Date(d.dueDate)<new Date()&&done<total;
+    return `<div style="background:rgba(255,255,255,0.03);border:1px solid ${overdue?"rgba(224,85,85,0.3)":"rgba(255,255,255,0.07)"};border-radius:11px;padding:13px 15px;margin-bottom:9px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="font-size:14px;font-weight:600;flex:1;">${d.name}</div>
+        ${overdue?`<span style="font-size:10px;background:rgba(224,85,85,0.15);color:#e05555;padding:2px 8px;border-radius:8px;">⚠️ Overdue</span>`:""}
+        <span style="font-size:11px;background:rgba(74,158,255,0.15);color:#4a9eff;padding:2px 8px;border-radius:8px;">📅 ${d.dueDate}</span>
+        <span style="font-size:11px;background:rgba(61,186,126,0.15);color:#3dba7e;padding:2px 8px;border-radius:8px;">${done}/${total} Done</span>
+      </div>
+      <div style="background:rgba(255,255,255,0.05);border-radius:6px;height:5px;margin-bottom:10px;overflow:hidden;"><div style="background:${pct===100?"#3dba7e":"var(--gold)"};height:100%;width:${pct}%;transition:width .3s;border-radius:6px;"></div></div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">${d.students.map(s=>`<span style="font-size:11px;padding:3px 9px;border-radius:7px;background:${s.status==="done"?"rgba(61,186,126,0.15)":"rgba(255,255,255,0.05)"};color:${s.status==="done"?"#3dba7e":"var(--muted)"};">${s.status==="done"?"✅":"⏳"} ${s.roll}. ${s.name}</span>`).join("")}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:var(--muted);">By ${d.assignedBy||"—"} · ${d.assignedOn||""}</span>
+        <div style="flex:1;"></div>
+        ${canManage?`<button class="btn btn-gold btn-sm" onclick="openDutyCompletion('${d.id}')">✅ Mark</button>`:""}
+        ${canManage?`<button class="btn btn-danger btn-sm" onclick="deleteDuty('${d.id}')">🗑️</button>`:""}
+      </div>
+      ${d.note?`<div style="margin-top:8px;font-size:11px;color:var(--muted);background:rgba(255,255,255,0.03);border-radius:7px;padding:6px 10px;">📝 ${d.note}</div>`:""}
+    </div>`;
+  }).join("");
+}
+// Temporary state for pending duty completion changes (in-modal only)
+let _pendingDutyStatus={};
+function openDutyCompletion(dutyId){
+  const duties=DB.get("duties")||[];
+  const d=duties.find(x=>x.id===dutyId); if(!d) return;
+  _pendingDutyStatus={};
+  (d.students||[]).forEach(s=>{ _pendingDutyStatus[s.id]=s.status||"pending"; });
+  document.getElementById("dutyCompletionId").value=dutyId;
+  document.getElementById("dutyCompletionLabel").textContent=`${d.name} — Due: ${d.dueDate}`;
+  renderDutyCompletionGrid(d);
+  openModal("dutyCompletionModal");
+}
+function renderDutyCompletionGrid(d){
+  const grid=document.getElementById("dutyCompletionGrid");
+  grid.innerHTML=(d.students||[]).map(s=>{
+    const isDone=_pendingDutyStatus[s.id]==="done";
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,0.03);border-radius:8px;">
+      <span style="font-size:13px;flex:1;">${s.roll}. ${s.name}</span>
+      <button onclick="toggleDutyStudentStatus('${d.id}','${s.id}')" style="padding:5px 14px;border-radius:7px;border:1.5px solid ${isDone?"#3dba7e":"rgba(255,255,255,0.2)"};background:${isDone?"rgba(61,186,126,0.2)":"rgba(224,85,85,0.07)"};color:${isDone?"#3dba7e":"#e05555"};font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;">
+        ${isDone?"✅ Done":"⏳ Pending"}
+      </button>
+    </div>`;
+  }).join("");
+}
+function toggleDutyStudentStatus(dutyId,studentId){
+  _pendingDutyStatus[studentId]=_pendingDutyStatus[studentId]==="done"?"pending":"done";
+  const duties=DB.get("duties")||[];
+  const d=duties.find(x=>x.id===dutyId);
+  if(d) renderDutyCompletionGrid(d);
+}
+function saveDutyCompletion(){
+  const dutyId=document.getElementById("dutyCompletionId").value;
+  const duties=DB.get("duties")||[];
+  const idx=duties.findIndex(x=>x.id===dutyId); if(idx<0) return;
+  const d=duties[idx];
+  const updated=duties.map((d,i)=>i===idx?{
+    ...d,
+    students:d.students.map(s=>({...s,status:_pendingDutyStatus[s.id]||s.status}))
+  }:d);
+  DB.set("duties",updated);
+  _pendingDutyStatus={};
+  closeModal("dutyCompletionModal");
+  showToast("✅ Duty completion saved!");
+  renderDutyLog();
+}
+async function deleteDuty(id){
+  if(!await customConfirm("Delete this duty record?","Delete Duty","📋","Delete")) return;
+  DB.del("duties",id);
+  renderDutyLog();
+  showToast("🗑️ Duty deleted");
+}
+
 function customConfirm(msg,title="Confirm Delete",icon="🗑️",okLabel="Delete"){ return new Promise(resolve=>{ _confirmResolve=resolve; document.getElementById("confirmMsg").textContent=msg; document.getElementById("confirmTitle").textContent=title; document.getElementById("confirmIcon").textContent=icon; document.getElementById("confirmOkBtn").textContent=okLabel; document.getElementById("confirmOverlay").style.display="flex"; }); }
 function resolveConfirm(val){ document.getElementById("confirmOverlay").style.display="none"; if(_confirmResolve){ _confirmResolve(val); _confirmResolve=null; } }
 document.getElementById("confirmOverlay").addEventListener("click",function(e){ if(e.target===this) resolveConfirm(false); });

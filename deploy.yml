@@ -1,0 +1,62 @@
+name: Deploy Class X LLR to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main          # deploy on every push to main
+  workflow_dispatch:  # allow manual trigger from Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      # 1 — Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2 — Inject Groq API key into index.html at deploy time
+      #     Store your key as a GitHub Secret named GROQ_API_KEY
+      #     Settings → Secrets and variables → Actions → New repository secret
+      - name: Inject Groq API key
+        run: |
+          sed -i "s|window._APP_CONFIG = { groqKey: \"[^\"]*\" };|window._APP_CONFIG = { groqKey: \"${{ secrets.GROQ_API_KEY }}\" };|g" index.html
+          echo "✅ Groq key injected"
+
+      # 3 — Verify the injection worked (masks actual key in logs)
+      - name: Verify injection
+        run: |
+          if grep -q 'groqKey: ""' index.html; then
+            echo "⚠️  Warning: groqKey is empty — make sure GROQ_API_KEY secret is set"
+          else
+            echo "✅ groqKey present in index.html"
+          fi
+
+      # 4 — Configure GitHub Pages
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      # 5 — Upload all site files as artifact
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'          # uploads everything in the repo root
+
+      # 6 — Deploy to GitHub Pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

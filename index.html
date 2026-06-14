@@ -11,7 +11,8 @@
 <!-- 🔐 Local config — DO NOT commit this file. See config.example.js -->
 <script>
 // Inline config — Groq key injected by GitHub Actions at deploy time
-window._APP_CONFIG = { groqKey: "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" };
+// API key handled server-side via Cloudflare Worker
+window._APP_CONFIG = {};
 </script>
 
 <!-- PWA: Manifest & theme -->
@@ -4620,8 +4621,6 @@ async function aiSend() {
   const text    = input.value.trim();
   if(!text) return;
 
-  const key = aiGetKey();
-
   // Show user message
   aiAddBubble('user', escapeHtml(text));
   input.value = '';
@@ -4635,7 +4634,7 @@ async function aiSend() {
   aiShowTyping();
 
   try {
-    const reply = await aiCallHuggingFace(key, _aiHistory);
+    const reply = await aiCallHuggingFace(_aiHistory);
     aiRemoveTyping();
     const botBubble = aiAddBubble('bot', formatAIReply(reply));
     _aiHistory.push({ role: 'assistant', content: reply });
@@ -4654,7 +4653,7 @@ async function aiSend() {
 }
 
 // ── Call Groq Inference API ──
-async function aiCallHuggingFace(apiKey, history) {
+async function aiCallHuggingFace(history) {
   const systemPrompt =
     'You are a friendly and knowledgeable AI Study Buddy for Class X students at USCD DAV Public School. ' +
     'Your job is to: explain concepts clearly and simply, help solve homework step-by-step, ' +
@@ -4670,11 +4669,10 @@ async function aiCallHuggingFace(apiKey, history) {
   ];
 
   const res = await fetch(
-    'https://api.groq.com/openai/v1/chat/completions',
+    'https://groq-proxy-llr.anmol2010kumar18.workers.dev',
     {
       method: 'POST',
       headers: {
-        'Authorization': 'Bearer ' + apiKey,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({

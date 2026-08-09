@@ -1,7 +1,7 @@
 {
-  "name": "USCD DAV Public School — Class X LLR",
-  "short_name": "Class X LLR",
-  "description": "Digital archive for Class X LLR students",
+  "name": "USCD DAV Public School — Class VIII SBS",
+  "short_name": "Class VIII SBS",
+  "description": "Digital archive for Class VIII SBS students",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

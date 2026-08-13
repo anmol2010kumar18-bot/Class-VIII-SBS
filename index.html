@@ -2219,13 +2219,40 @@ function _clearWriteLock(){
 // collection being rewritten as one array on every single add/delete — otherwise every new
 // upload has to re-transmit every file ever uploaded, which is what made uploads slow (and,
 // once the combined payload got big enough, made the write fail outright).
-const PER_ITEM_KEYS=new Set(["files","gallery","studentPhotos"]);
+const PER_ITEM_KEYS=new Set(["files","gallery","studentPhotos","students","leaveApplications","complaints"]);
 function _asArray(v){ if(Array.isArray(v)) return v; if(v&&typeof v==="object") return Object.values(v); return []; }
 function _fbWriteFailToast(){ try{ showToast("⚠️ Cloud sync failed — saved on this device only"); }catch(e2){} }
 function _fbDeleteFailToast(){ try{ showToast("⚠️ Removed here, but cloud sync failed — it may reappear on other devices until this reconnects"); }catch(e2){} }
 const DB={
   get(k){ return _memCache[k]!==undefined?_memCache[k]:null; },
-  set(k,v){ _memCache[k]=v; try{ const s=JSON.stringify(v); if(s.length<500000){ localStorage.setItem("sbs_"+k,s); } else { localStorage.removeItem("sbs_"+k); }}catch(e){ try{ localStorage.removeItem("sbs_"+k); }catch(e2){}} if(_firebaseReady&&_db&&!PER_ITEM_KEYS.has(k)){ _writeLock=true; _db.ref("sbs/"+k).set(v).then(()=>{ setTimeout(_clearWriteLock,800); }).catch(e=>{ _clearWriteLock(); _fbWriteFailToast(); }); } },
+  // For per-item keys (files/gallery/studentPhotos/students), a plain "set" of the whole
+  // array used to overwrite the entire Firebase node in one shot. That's fine from a single
+  // device, but the moment two devices write around the same time (e.g. two students
+  // registering, or two logins updating lastLogin, within moments of each other), each
+  // device only knows about the students IT had already loaded — so whichever write lands
+  // last silently wipes out anything the other device had just added, with no error shown
+  // anywhere. This is what caused registered students to vanish. Fix: for these keys, write
+  // each item to its own child node (sbs/<key>/<id>) instead of replacing the whole
+  // collection — exactly like files/gallery already do. Two devices can now both add or
+  // edit a student at the same moment without either one erasing the other's write.
+  // (Writes go out for every item on every call rather than diffing against a "before"
+  // state — callers here mutate the same array DB.get() handed back before calling set(),
+  // so there is no reliable "before" left to diff against by the time we're in here.
+  // Re-sending unchanged items is harmless for a single class roster's worth of data.)
+  set(k,v){
+    _memCache[k]=v;
+    try{ const s=JSON.stringify(v); if(s.length<500000){ localStorage.setItem("sbs_"+k,s); } else { localStorage.removeItem("sbs_"+k); }}catch(e){ try{ localStorage.removeItem("sbs_"+k); }catch(e2){}}
+    if(!_firebaseReady||!_db) return;
+    if(PER_ITEM_KEYS.has(k)&&Array.isArray(v)){
+      v.forEach(item=>{
+        if(!item||!item.id) return;
+        _writeLock=true;
+        _db.ref("sbs/"+k+"/"+item.id).set(item).then(()=>{ setTimeout(_clearWriteLock,800); }).catch(e=>{ _clearWriteLock(); _fbWriteFailToast(); });
+      });
+    } else {
+      _writeLock=true; _db.ref("sbs/"+k).set(v).then(()=>{ setTimeout(_clearWriteLock,800); }).catch(e=>{ _clearWriteLock(); _fbWriteFailToast(); });
+    }
+  },
   push(k,item){
     const a=DB.get(k)||[]; a.unshift(item); DB.set(k,a);
     if(PER_ITEM_KEYS.has(k)&&_firebaseReady&&_db){ _writeLock=true; _db.ref("sbs/"+k+"/"+item.id).set(item).then(()=>{ setTimeout(_clearWriteLock,800); }).catch(e=>{ _clearWriteLock(); _fbWriteFailToast(); }); }
@@ -5324,7 +5351,7 @@ function setStudentHouse(studentId,houseId){
   renderStudentInfoTable();
 }
 async function deleteStudent(id){ const students=DB.get("students")||[],s=students.find(x=>x.id===id); if(!s) return; if(!await customConfirm(`Remove "${s.name}" (Roll: ${s.roll})?`,"Remove Student","👤","Remove")) return; if(!await requireStepUp("remove this student")) return; DB.del("students",id); const recs=(DB.get("feeRecords")||[]).filter(r=>r.id!==id); DB.set("feeRecords",recs); logAudit("Student","delete",s.name,null,`Roll No: ${s.roll} · Adm. No: ${s.admNo}`); renderStudentsList(); try{updateFeeBadge();}catch(e){} showToast("🗑️ Student removed"); }
-async function removeAllStudents(){ const students=DB.get("students")||[]; if(!students.length){ showToast("No students to remove"); return; } if(!await customConfirm(`Remove ALL ${students.length} students?`,"Remove All","⚠️","Remove All")) return; if(!await requireStepUp("remove ALL students")) return; DB.set("students",[]); DB.set("ct_notifications",[]); DB.set("feeRecords",[]); logAudit("Student","delete",`ALL ${students.length} students`,null,"Bulk removal — entire class roster cleared"); renderStudentsList(); try{updateFeeBadge();}catch(e){} showToast("🗑️ All students removed"); }
+async function removeAllStudents(){ const students=DB.get("students")||[]; if(!students.length){ showToast("No students to remove"); return; } if(!await customConfirm(`Remove ALL ${students.length} students?`,"Remove All","⚠️","Remove All")) return; if(!await requireStepUp("remove ALL students")) return; students.forEach(s=>{ if(s&&s.id) DB.del("students",s.id); }); DB.set("ct_notifications",[]); DB.set("feeRecords",[]); logAudit("Student","delete",`ALL ${students.length} students`,null,"Bulk removal — entire class roster cleared"); renderStudentsList(); try{updateFeeBadge();}catch(e){} showToast("🗑️ All students removed"); }
 function markNotifsRead(){ const notifs=DB.get("ct_notifications")||[]; notifs.forEach(n=>n.read=true); DB.set("ct_notifications",notifs); updateCTNotifBadge(); renderStudentsList(); showToast("✓ All read"); }
 
 // ═══════════════════════════════════════════
@@ -7554,7 +7581,18 @@ function castVote(pollId, optionIdx){
     else current=[optionIdx];
   }
   p.votes[uid]=current;
-  DB.set("polls",polls);
+  // Update the local copy directly rather than going through DB.set("polls", polls) —
+  // a full-poll overwrite here would let two students voting on the same poll around the
+  // same moment silently erase each other's vote (whoever's write landed last would carry
+  // its own, older copy of the votes list, wiping out the other student's just-cast vote).
+  // Instead, write ONLY this student's vote to its own path in Firebase — concurrent voters
+  // can then never clobber one another, since each vote lives at its own address.
+  _memCache["polls"]=polls;
+  try{ const s=JSON.stringify(polls); if(s.length<500000) localStorage.setItem("sbs_polls",s); }catch(e){}
+  if(_firebaseReady&&_db){
+    _writeLock=true;
+    _db.ref(`sbs/polls/${pollId}/votes/${uid}`).set(current).then(()=>{ setTimeout(_clearWriteLock,800); }).catch(e=>{ _clearWriteLock(); _fbWriteFailToast(); });
+  }
   renderPolls();
   if(current.length) showToast("✅ Vote recorded!");
 }
@@ -8360,7 +8398,7 @@ window.addEventListener('load', () => {
   <div class="ai-panel-header">
     <div class="ai-avatar">🤖</div>
     <div class="ai-panel-info">
-      <div class="ai-panel-name">AI Study Buddy</div>
+      <div class="ai-panel-name"> PRE-GOL AI</div>
       <div class="ai-panel-status">Online — Ready to help</div>
     </div>
     <button class="ai-close-btn" onclick="toggleAITutor()" title="Close">✕</button>
@@ -8378,7 +8416,7 @@ window.addEventListener('load', () => {
   <!-- Messages -->
   <div class="ai-messages" id="aiMessages">
     <div class="ai-bubble bot">
-      👋 Hello! I'm your <strong>AI Study Buddy</strong> for Class VIII.<br><br>
+      👋 Hello! I'm your <strong> PRE-GOL AI</strong> for Class VIII.<br><br>
       Ask me anything — doubts, homework help, topic explanations, or practice questions. I'm here to help! 🎓
     </div>
   </div>
